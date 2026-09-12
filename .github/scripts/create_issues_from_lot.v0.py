@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import glob
-import time
 import unicodedata
 import zipfile
 import argparse
@@ -123,43 +122,13 @@ def get_existing_markers(session, owner, repo):
     return markers
 
 
-def create_issue(session, owner, repo, title, body, labels, max_retries=6):
-    """POST a new issue, retrying with backoff on primary or secondary rate limits."""
-    delay = 5
-    for attempt in range(1, max_retries + 1):
-        resp = session.post(
-            f"{API_ROOT}/repos/{owner}/{repo}/issues",
-            json={"title": title, "body": body, "labels": labels},
-        )
-        if resp.status_code == 201:
-            return resp.json()
-
-        is_secondary_limit = resp.status_code == 403 and (
-            "rate limit" in resp.text.lower() or "abuse" in resp.text.lower()
-        )
-        is_primary_limit = (
-            resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining") == "0"
-        )
-
-        if not (is_secondary_limit or is_primary_limit):
-            resp.raise_for_status()  # a real error -- surface it immediately
-
-        retry_after = resp.headers.get("Retry-After")
-        if retry_after:
-            wait = int(retry_after) + 1
-        elif is_primary_limit and resp.headers.get("X-RateLimit-Reset"):
-            wait = max(int(resp.headers["X-RateLimit-Reset"]) - int(time.time()), 1) + 1
-        else:
-            wait = delay
-            delay = min(delay * 2, 120)
-
-        print(
-            f"::warning::Rate limited creating '{title}' "
-            f"(attempt {attempt}/{max_retries}). Waiting {wait}s..."
-        )
-        time.sleep(wait)
-
-    raise RuntimeError(f"Exceeded retries creating issue: {title}")
+def create_issue(session, owner, repo, title, body, labels):
+    resp = session.post(
+        f"{API_ROOT}/repos/{owner}/{repo}/issues",
+        json={"title": title, "body": body, "labels": labels},
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def main():
@@ -239,8 +208,7 @@ def main():
             issue = create_issue(session, owner, repo, issue_title, body, labels)
             print(f"Created issue #{issue['number']} for row {row_id}: {title}")
             created += 1
-            time.sleep(1.5)  # pace requests to stay under GitHub's secondary rate limit
-        except (requests.HTTPError, RuntimeError) as exc:
+        except requests.HTTPError as exc:
             print(f"::error::Failed to create issue for row {row_id} ('{title}'): {exc}")
             errors += 1
 
