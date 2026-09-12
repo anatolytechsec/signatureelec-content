@@ -1,0 +1,59 @@
+name: Publish LOT articles as issues
+
+# Triggered on every push to main. The actual work only runs if the
+# pushed commit's message contains a "LOT_<number>" reference (e.g. "LOT_1"),
+# matching a top-level folder of the same name (e.g. LOT_1/*.xlsx, LOT_1/*.zip).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  detect-lot:
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.detect.outputs.found }}
+      lot_id: ${{ steps.detect.outputs.lot_id }}
+    steps:
+      - name: Detect LOT_x reference in commit message
+        id: detect
+        env:
+          # Passed via env (not interpolated into the script) to avoid
+          # shell/script injection from untrusted commit message content.
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          LOT_ID=$(printf '%s' "$COMMIT_MSG" | grep -oE 'LOT_[0-9]+' | head -n1 || true)
+          if [ -z "$LOT_ID" ]; then
+            echo "No LOT_x reference found in commit message -- skipping."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Detected lot: $LOT_ID"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "lot_id=$LOT_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+  create-issues:
+    needs: detect-lot
+    if: needs.detect-lot.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet openpyxl requests
+
+      - name: Create issues for ${{ needs.detect-lot.outputs.lot_id }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python .github/scripts/create_issues_from_lot.py --lot "${{ needs.detect-lot.outputs.lot_id }}"
